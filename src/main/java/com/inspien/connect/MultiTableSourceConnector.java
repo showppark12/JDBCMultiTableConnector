@@ -2,6 +2,7 @@ package com.inspien.connect;
 
 import com.inspien.connect.source.MultiTableSourceConnectorConfig;
 import com.inspien.connect.source.MultiTableSourceTask;
+import com.inspien.connect.source.MultiTableSourceTaskConfig;
 import io.confluent.connect.jdbc.dialect.DatabaseDialect;
 import io.confluent.connect.jdbc.dialect.DatabaseDialects;
 import io.confluent.connect.jdbc.source.JdbcSourceTaskConfig;
@@ -46,8 +47,7 @@ public class MultiTableSourceConnector extends SourceConnector {
             configProperties = properties;
             config = new MultiTableSourceConnectorConfig(configProperties);
         } catch (ConfigException e) {
-            throw new ConnectException("Couldn't start JdbcSourceConnector due to configuration error",
-                    e);
+            throw new ConnectException("Couldn't start JdbcSourceConnector due to configuration error", e);
         }
 
         final String dbUrl = config.getString(MultiTableSourceConnectorConfig.CONNECTION_URL_CONFIG);
@@ -70,22 +70,19 @@ public class MultiTableSourceConnector extends SourceConnector {
         long tablePollMs = config.getLong(MultiTableSourceConnectorConfig.TABLE_POLL_INTERVAL_MS_CONFIG);
         List<String> whitelist = config.getList(MultiTableSourceConnectorConfig.TABLE_WHITELIST_CONFIG);
         Set<String> whitelistSet = whitelist.isEmpty() ? null : new HashSet<>(whitelist);
-        List<String> blacklist = config.getList(MultiTableSourceConnectorConfig.TABLE_BLACKLIST_CONFIG);
-        Set<String> blacklistSet = blacklist.isEmpty() ? null : new HashSet<>(blacklist);
 
-        if (whitelistSet != null && blacklistSet != null) {
-            throw new ConnectException(MultiTableSourceConnectorConfig.TABLE_WHITELIST_CONFIG + " and "
-                    + MultiTableSourceConnectorConfig.TABLE_BLACKLIST_CONFIG + " are "
-                    + "exclusive.");
+        if (whitelistSet == null) {
+            throw new ConnectException(MultiTableSourceConnectorConfig.TABLE_WHITELIST_CONFIG + " are exclusive.");
         }
 
+        // blacklist 설정은 사용하지 않으나 JDBC 커넥터의 TableMonitorThread를 일단 사용하기 위해서 blacklist는 항상 null로 넘겨준다.
         tableMonitorThread = new TableMonitorThread(
                 dialect,
                 cachedConnectionProvider,
                 context,
                 tablePollMs,
                 whitelistSet,
-                blacklistSet
+                null
         );
         tableMonitorThread.start();
     }
@@ -104,12 +101,13 @@ public class MultiTableSourceConnector extends SourceConnector {
     public List<Map<String, String>> taskConfigs(int maxTasks) {
         List<Map<String, String>> taskConfigs;
 
+        // 설정에서 받아온 테이블 list
         List<TableId> currentTables = tableMonitorThread.tables();
         if (currentTables.isEmpty()) {
             taskConfigs = Collections.emptyList();
             log.warn("No tasks will be run because no tables were found");
         } else {
-            // 입력받은 테이블의 사이즈와 직접 지정해준 maxTasks 사이즈 중 작은 것으로 태스크의 개수를 정한다.
+            // 입력받은 테이블의 개수와 직접 지정해준 maxTasks 사이즈 중 작은 것으로 태스크의 개수를 정한다.
             int numGroups = Math.min(currentTables.size(), maxTasks);
             List<List<TableId>> tablesGrouped =
                     ConnectorUtils.groupPartitions(currentTables, numGroups);
@@ -118,7 +116,7 @@ public class MultiTableSourceConnector extends SourceConnector {
                 Map<String, String> taskProps = new HashMap<>(configProperties);
                 ExpressionBuilder builder = dialect.expressionBuilder();
                 builder.appendList().delimitedBy(",").of(taskTables);
-                taskProps.put(JdbcSourceTaskConfig.TABLES_CONFIG, builder.toString());
+                taskProps.put(MultiTableSourceTaskConfig.TABLES_CONFIG, builder.toString());
                 taskConfigs.add(taskProps);
             }
             log.trace(

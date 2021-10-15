@@ -131,16 +131,6 @@ public class MultiTableSourceConnectorConfig extends AbstractConfig {
     private static final EnumRecommender NUMERIC_MAPPING_RECOMMENDER =
             EnumRecommender.in(NumericMapping.values());
 
-    public static final String DIALECT_NAME_CONFIG = "dialect.name";
-    private static final String DIALECT_NAME_DISPLAY = "Database Dialect";
-    public static final String DIALECT_NAME_DEFAULT = "";
-    private static final String DIALECT_NAME_DOC =
-            "The name of the database dialect that should be used for this connector. By default this "
-                    + "is empty, and the connector automatically determines the dialect based upon the "
-                    + "JDBC connection URL. Use this if you want to override that behavior and use a "
-                    + "specific dialect. All properly-packaged dialects in the JDBC connector plugin "
-                    + "can be used.";
-
     public static final String MODE_CONFIG = "mode";
     private static final String MODE_DOC =
             "The mode for updating a table each time it is polled. Options include:\n"
@@ -228,13 +218,15 @@ public class MultiTableSourceConnectorConfig extends AbstractConfig {
     public static final String TABLE_WHITELIST_DEFAULT = "";
     private static final String TABLE_WHITELIST_DISPLAY = "Table Whitelist";
 
-    public static final String TABLE_BLACKLIST_CONFIG = "table.blacklist";
-    private static final String TABLE_BLACKLIST_DOC =
-            "List of tables to exclude from copying. If specified, ``table.whitelist`` may not be set. "
-                    + "Use a comma-separated list to specify multiple tables "
-                    + "(for example, ``table.blacklist: \"User, Address, Email\"``).";
-    public static final String TABLE_BLACKLIST_DEFAULT = "";
-    private static final String TABLE_BLACKLIST_DISPLAY = "Table Blacklist";
+    public static final String TABLE_KEY_CONFIG = "table.key";
+    private static final String TABLE_KEY_DOC = "key of each tables";
+    public static final String TABLE_KEY_DEFAULT = "";
+    private static final String TABLE_KEY_DISPLAY = "Table key list";
+
+    public static final String TABLE_HIERARCHY_CONFIG = "table.hierarchy";
+    private static final String TABLE_HIERARCHY_DOC = "hierarchy of table";
+    public static final String TABLE_HIERARCHY_DEFAULT = "";
+    private static final String TABLE_HIERARCHY_DISPLAY = "Table Hierarchy";
 
     public static final String SCHEMA_PATTERN_CONFIG = "schema.pattern";
     private static final String SCHEMA_PATTERN_DOC =
@@ -253,24 +245,10 @@ public class MultiTableSourceConnectorConfig extends AbstractConfig {
                     + "that all table metadata is fetched, regardless of the catalog.";
     private static final String CATALOG_PATTERN_DISPLAY = "Schema pattern";
     public static final String CATALOG_PATTERN_DEFAULT = null;
-//
-//    public static final String QUERY_CONFIG = "query";
-//    private static final String QUERY_DOC =
-//            "If specified, the query to perform to select new or updated rows. Use this setting if you "
-//                    + "want to join tables, select subsets of columns in a table, or filter data. If used, this"
-//                    + " connector will only copy data using this query -- whole-table copying will be disabled."
-//                    + " Different query modes may still be used for incremental updates, but in order to "
-//                    + "properly construct the incremental query, it must be possible to append a WHERE clause "
-//                    + "to this query (i.e. no WHERE clauses may be used). If you use a WHERE clause, it must "
-//                    + "handle incremental queries itself.";
-//    public static final String QUERY_DEFAULT = "";
-//    private static final String QUERY_DISPLAY = "Query";
 
-    public static final String TOPIC_PREFIX_CONFIG = "topic.prefix";
-    private static final String TOPIC_PREFIX_DOC =
-            "Prefix to prepend to table names to generate the name of the Kafka topic to publish data "
-                    + "to, or in the case of a custom query, the full name of the topic to publish to.";
-    private static final String TOPIC_PREFIX_DISPLAY = "Topic Prefix";
+    public static final String TOPIC_NAME_CONFIG = "topic.name";
+    private static final String TOPIC_NAME_DOC = "Topic name";
+    private static final String TOPIC_NAME_DISPLAY = "Topic Name";
 
     public static final String VALIDATE_NON_NULL_CONFIG = "validate.non.null";
     private static final String VALIDATE_NON_NULL_DOC =
@@ -355,7 +333,7 @@ public class MultiTableSourceConnectorConfig extends AbstractConfig {
                 ++orderInGroup,
                 Width.LONG,
                 CONNECTION_URL_DISPLAY,
-                Arrays.asList(TABLE_WHITELIST_CONFIG, TABLE_BLACKLIST_CONFIG)
+                Arrays.asList(TABLE_WHITELIST_CONFIG)
         ).define(
                 CONNECTION_USER_CONFIG,
                 Type.STRING,
@@ -448,15 +426,25 @@ public class MultiTableSourceConnectorConfig extends AbstractConfig {
                 Width.LONG,
                 TABLE_WHITELIST_DISPLAY
         ).define(
-                TABLE_BLACKLIST_CONFIG,
-                Type.LIST,
-                TABLE_BLACKLIST_DEFAULT,
+                TABLE_KEY_CONFIG,
+                Type.STRING,
+                TABLE_KEY_DEFAULT,
                 Importance.MEDIUM,
-                TABLE_BLACKLIST_DOC,
+                TABLE_KEY_DOC,
                 DATABASE_GROUP,
                 ++orderInGroup,
                 Width.LONG,
-                TABLE_BLACKLIST_DISPLAY
+                TABLE_KEY_DISPLAY
+        ).define(
+                TABLE_HIERARCHY_CONFIG,
+                Type.STRING,
+                TABLE_HIERARCHY_DEFAULT,
+                Importance.MEDIUM,
+                TABLE_HIERARCHY_DOC,
+                DATABASE_GROUP,
+                ++orderInGroup,
+                Width.LONG,
+                TABLE_HIERARCHY_DISPLAY
         ).define(
                 CATALOG_PATTERN_CONFIG,
                 Type.STRING,
@@ -499,18 +487,7 @@ public class MultiTableSourceConnectorConfig extends AbstractConfig {
                 Width.SHORT,
                 NUMERIC_MAPPING_DISPLAY,
                 NUMERIC_MAPPING_RECOMMENDER
-        ).define(
-                DIALECT_NAME_CONFIG,
-                Type.STRING,
-                DIALECT_NAME_DEFAULT,
-                DatabaseDialectRecommender.INSTANCE,
-                Importance.LOW,
-                DIALECT_NAME_DOC,
-                DATABASE_GROUP,
-                ++orderInGroup,
-                Width.LONG,
-                DIALECT_NAME_DISPLAY,
-                DatabaseDialectRecommender.INSTANCE);
+        );
     }
 
     private static final void addModeOptions(ConfigDef config) {
@@ -647,36 +624,36 @@ public class MultiTableSourceConnectorConfig extends AbstractConfig {
                 Width.SHORT,
                 TABLE_POLL_INTERVAL_MS_DISPLAY
         ).define(
-                TOPIC_PREFIX_CONFIG,
+                TOPIC_NAME_CONFIG,
                 Type.STRING,
                 "",
                 new Validator() {
                     @Override
                     public void ensureValid(final String name, final Object value) {
                         if (value == null) {
-                            throw new ConfigException(name, value, "Topic prefix must not be null.");
+                            throw new ConfigException(name, value, "Topic name must not be null.");
                         }
 
                         String trimmed = ((String) value).trim();
 
                         if (trimmed.length() > 249) {
                             throw new ConfigException(name, value,
-                                    "Topic prefix length must not exceed max topic name length, 249 chars");
+                                    "Topic name length must not exceed 249 chars");
                         }
 
                         if (INVALID_CHARS.matcher(trimmed).find()) {
                             throw new ConfigException(name, value,
-                                    "Topic prefix must not contain any character other than "
+                                    "Topic name must not contain any character other than "
                                             + "ASCII alphanumerics, '.', '_' and '-'.");
                         }
                     }
                 },
                 Importance.HIGH,
-                TOPIC_PREFIX_DOC,
+                TOPIC_NAME_DOC,
                 CONNECTOR_GROUP,
                 ++orderInGroup,
                 Width.MEDIUM,
-                TOPIC_PREFIX_DISPLAY
+                TOPIC_NAME_DISPLAY
         ).define(
                 TIMESTAMP_DELAY_INTERVAL_MS_CONFIG,
                 Type.LONG,
@@ -710,8 +687,8 @@ public class MultiTableSourceConnectorConfig extends AbstractConfig {
         }
     }
 
-    public String topicPrefix() {
-        return getString(MultiTableSourceTaskConfig.TOPIC_PREFIX_CONFIG).trim();
+    public String topicName() {
+        return getString(MultiTableSourceTaskConfig.TOPIC_NAME_CONFIG).trim();
     }
 
     /**

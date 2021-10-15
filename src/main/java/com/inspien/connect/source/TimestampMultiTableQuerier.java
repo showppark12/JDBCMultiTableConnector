@@ -19,10 +19,7 @@ import org.slf4j.LoggerFactory;
 
 import java.sql.*;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.TimeZone;
+import java.util.*;
 
 public class TimestampMultiTableQuerier extends TableQuerier implements CriteriaValues {
     private static final Logger log = LoggerFactory.getLogger(
@@ -49,18 +46,19 @@ public class TimestampMultiTableQuerier extends TableQuerier implements Criteria
     public TimestampMultiTableQuerier(
             DatabaseDialect dialect,
             String tableName,
-            String topicPrefix,
+            String topicName,
             List<String> timestampColumnNames,
             String incrementingColumnName,
             Map<String, Object> offsetMap,
             Long timestampDelay,
             TimeZone timeZone,
             String suffix,
-            String dataHeader,
             String dataHeaderQuery,
             String dataHeaderUpdateQuery,
-            String dataHeaderCompleteQuery) {
-        super(dialect, tableName, topicPrefix ,suffix, dataHeader, dataHeaderQuery, dataHeaderUpdateQuery, dataHeaderCompleteQuery);
+            String dataHeaderCompleteQuery,
+            String fk
+    ) {
+        super(dialect, tableName, topicName ,suffix, dataHeaderQuery, dataHeaderUpdateQuery, dataHeaderCompleteQuery, fk);
         this.timestampColumnNames = timestampColumnNames;
         this.offset = TimestampIncrementingOffset.fromMap(offsetMap);
         this.incrementingColumnName = incrementingColumnName;
@@ -70,7 +68,7 @@ public class TimestampMultiTableQuerier extends TableQuerier implements Criteria
                 timestampColumns.add(new ColumnId(tableId, timestampColumn));
             }
         }
-        topic = topicPrefix + dataHeader; // backward compatible
+        topic = topicName; // backward compatible
         partition = OffsetProtocols.sourcePartitionForProtocolV1(tableId);
         this.timestampDelay = timestampDelay;
         this.timeZone = timeZone;
@@ -178,20 +176,24 @@ public class TimestampMultiTableQuerier extends TableQuerier implements Criteria
     }
 
     @Override
-    public void maybeStartQuery(Connection db) throws SQLException {
+    public void maybeStartQuery(Connection db, String dataHeader) throws SQLException {
         if (resultSet == null) {
             log.info("starting maybeStartQuery");
+            this.dataHeader = dataHeader;
             this.db = db;
             stmt = getOrCreatePreparedStatement(db);
             resultSet = executeQuery();
-            this.updateBeforeExecuteQuery();
-
+            if (!Objects.isNull(this.dataHeaderUpdateQuery)) {
+                this.updateBeforeExecuteQuery();
+            }
             String schemaName = tableId != null ? tableId.tableName() : null;
             ResultSetMetaData metaData = resultSet.getMetaData();
             dialect.validateSpecificColumnTypes(metaData, timestampColumns);
             schemaMapping = SchemaMapping.create(schemaName, metaData, dialect);
         }
     }
+
+
 
     protected void updateBeforeExecuteQuery() throws SQLException {
         ExpressionBuilder beforebuilder = dialect.expressionBuilder();
@@ -211,10 +213,10 @@ public class TimestampMultiTableQuerier extends TableQuerier implements Criteria
 
         updateStmt = dialect.createPreparedStatement(db, beforeQueryString);
 
-        this.db.setAutoCommit(false);
-
         criteria.setQueryParameters(updateStmt, this);
         log.info("Statement to update execute: {}", stmt.toString());
+
+        this.db.setAutoCommit(false);
 
         try {
             updateStmt.executeUpdate();
@@ -223,10 +225,8 @@ public class TimestampMultiTableQuerier extends TableQuerier implements Criteria
             this.db.rollback();
         } finally {
             updateStmt.close();
-            log.info("updateSTMT 어케됨 : " + updateStmt);
             updateStmt = dialect.createPreparedStatement(db, afterQueryString);
             criteria.setQueryParameters(updateStmt, this);
-            log.info("update STMT Y로 바뀌었나 : " + updateStmt.toString());
         }
         this.db.commit();
 
@@ -234,17 +234,21 @@ public class TimestampMultiTableQuerier extends TableQuerier implements Criteria
 
     @Override
     protected void updateAfterExcuteQuery() throws SQLException {
-        log.info("Statement to update execute: {}", updateStmt.toString());
-        try {
-            updateStmt.executeUpdate();
-        } finally {
-            updateStmt.close();
-            log.info("updateSTMT 어케됨 : " + updateStmt);
+        if (!Objects.isNull(this.dataHeaderUpdateQuery)) {
+            log.info("Statement to update execute: {}", updateStmt.toString());
+            try {
+                updateStmt.executeUpdate();
+            } finally {
+                updateStmt.close();
+                log.info("updateSTMT 어케됨 : " + updateStmt);
+            }
+        } else{
+            log.info("업데이트 쿼리같은걸 하지 않는다.");
         }
     }
 
     @Override
-    public SourceRecord extractRecordInMultiMode(int batchMaxRows, Schema schema) throws SQLException {
+    public StructsWithSchema extractStructsWithSchema(int batchMaxRows) throws SQLException {
         return null;
     }
 

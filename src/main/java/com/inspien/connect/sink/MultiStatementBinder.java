@@ -2,16 +2,11 @@ package com.inspien.connect.sink;
 
 import io.confluent.connect.jdbc.dialect.DatabaseDialect;
 import io.confluent.connect.jdbc.dialect.DatabaseDialect.StatementBinder;
-import io.confluent.connect.jdbc.sink.BufferedRecords;
 import io.confluent.connect.jdbc.sink.JdbcSinkConfig;
-import io.confluent.connect.jdbc.sink.PreparedStatementBinder;
 import io.confluent.connect.jdbc.sink.metadata.FieldsMetadata;
 import io.confluent.connect.jdbc.sink.metadata.SchemaPair;
-import io.confluent.connect.jdbc.util.CachedConnectionProvider;
-import io.confluent.connect.jdbc.util.ColumnDefinition;
 import io.confluent.connect.jdbc.util.TableDefinition;
 import org.apache.kafka.connect.data.Field;
-import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.sink.SinkRecord;
@@ -19,28 +14,22 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.sql.*;
-import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.Objects;
 
-public class MultiPrepareStatementBinder implements StatementBinder {
-    private static final Logger log = LoggerFactory.getLogger(MultiPrepareStatementBinder.class);
+public class MultiStatementBinder implements StatementBinder {
+    private static final Logger log = LoggerFactory.getLogger(MultiStatementBinder.class);
     private final JdbcSinkConfig.PrimaryKeyMode pkMode;
-    private final PreparedStatement statement;
+    private final Statement statement;
     private final SchemaPair schemaPair;
     private final FieldsMetadata fieldsMetadata;
-    private final JdbcSinkConfig.InsertMode insertMode;
+    private final String insertMode;
     private final DatabaseDialect dialect;
     private final TableDefinition tabDef;
-    private final Connection connection;
+    private final String sql;
 
-    /** @deprecated */
-    @Deprecated
-    public MultiPrepareStatementBinder(DatabaseDialect dialect, PreparedStatement statement, JdbcSinkConfig.PrimaryKeyMode pkMode, SchemaPair schemaPair, FieldsMetadata fieldsMetadata, JdbcSinkConfig.InsertMode insertMode) {
-        this(dialect, statement, pkMode, schemaPair, fieldsMetadata, (TableDefinition)null, insertMode,null);
-    }
 
-    public MultiPrepareStatementBinder(DatabaseDialect dialect, PreparedStatement statement, JdbcSinkConfig.PrimaryKeyMode pkMode, SchemaPair schemaPair, FieldsMetadata fieldsMetadata, TableDefinition tabDef, JdbcSinkConfig.InsertMode insertMode,Connection connection) {
+    public MultiStatementBinder(DatabaseDialect dialect, Statement statement, JdbcSinkConfig.PrimaryKeyMode pkMode, SchemaPair schemaPair, FieldsMetadata fieldsMetadata, TableDefinition tabDef, String insertMode, String sql) {
         this.dialect = dialect;
         this.pkMode = pkMode;
         this.statement = statement;
@@ -48,40 +37,40 @@ public class MultiPrepareStatementBinder implements StatementBinder {
         this.fieldsMetadata = fieldsMetadata;
         this.insertMode = insertMode;
         this.tabDef = tabDef;
-        this.connection = connection;
+        this.sql = sql;
     }
 
     public void bindRecord(SinkRecord record) throws SQLException {
         Struct valueStruct = (Struct)record.value();
         boolean isDelete = Objects.isNull(valueStruct);
-        int index0 = 1;
+        MultiReturn multiReturn = null;
+        int index = 1;
         if (isDelete) {
-            this.bindKeyFields(record, index0);
+            this.bindKeyFields(record, index, this.sql);
         } else {
-            int index;
             switch(this.insertMode) {
-                case INSERT:
-                case UPSERT:
-                    index = this.bindKeyFields(record, index0);
-                    this.bindNonKeyFields(record, valueStruct, index);
+                case "INSERT":
+                case "UPSERT":
+                    multiReturn = this.bindKeyFields(record, index, this.sql);
+                    multiReturn = this.bindNonKeyFields(record, valueStruct, multiReturn.getReturnIndex(), multiReturn.getReturnSql());
                     break;
-                case UPDATE:
-                    index = this.bindNonKeyFields(record, valueStruct, index0);
-                    this.bindKeyFields(record, index);
+                case "UPDATE":
+                    multiReturn = this.bindNonKeyFields(record, valueStruct, index, this.sql);
+                    this.bindKeyFields(record, multiReturn.getReturnIndex(), this.sql);
                     break;
                 default:
                     throw new AssertionError();
             }
         }
-        log.info("statement 바꾸고 싶어  : " + this.statement.toString());
-
-        this.statement.addBatch("select * from hh");
+        log.info("final sql : " + multiReturn.getReturnSql());
+        this.statement.addBatch(multiReturn.getReturnSql());
     }
 
-    protected int bindKeyFields(SinkRecord record, int index) throws SQLException {
+    protected MultiReturn bindKeyFields(SinkRecord record, int index, String sql) throws SQLException {
         Iterator var3;
         String fieldName;
         Field field;
+        String finalSql = sql;
         switch(this.pkMode) {
             case NONE:
                 if (!this.fieldsMetadata.keyFieldNames.isEmpty()) {
@@ -89,85 +78,108 @@ public class MultiPrepareStatementBinder implements StatementBinder {
                 }
                 break;
             case KAFKA:
-                assert this.fieldsMetadata.keyFieldNames.size() == 3;
-
-                this.bindField(index++, Schema.STRING_SCHEMA, record.topic(), (String)JdbcSinkConfig.DEFAULT_KAFKA_PK_NAMES.get(0));
-                this.bindField(index++, Schema.INT32_SCHEMA, record.kafkaPartition(), (String)JdbcSinkConfig.DEFAULT_KAFKA_PK_NAMES.get(1));
-                this.bindField(index++, Schema.INT64_SCHEMA, record.kafkaOffset(), (String)JdbcSinkConfig.DEFAULT_KAFKA_PK_NAMES.get(2));
+                // 지원하지 않음
+//                assert this.fieldsMetadata.keyFieldNames.size() == 3;
+//                this.bindField(index++, Schema.STRING_SCHEMA, record.topic(), (String)JdbcSinkConfig.DEFAULT_KAFKA_PK_NAMES.get(0));
+//                this.bindField(index++, Schema.INT32_SCHEMA, record.kafkaPartition(), (String)JdbcSinkConfig.DEFAULT_KAFKA_PK_NAMES.get(1));
+//                this.bindField(index++, Schema.INT64_SCHEMA, record.kafkaOffset(), (String)JdbcSinkConfig.DEFAULT_KAFKA_PK_NAMES.get(2));
                 break;
             case RECORD_KEY:
-                if (this.schemaPair.keySchema.type().isPrimitive()) {
-                    assert this.fieldsMetadata.keyFieldNames.size() == 1;
-
-                    this.bindField(index++, this.schemaPair.keySchema, record.key(), (String)this.fieldsMetadata.keyFieldNames.iterator().next());
-                    break;
-                } else {
-                    var3 = this.fieldsMetadata.keyFieldNames.iterator();
-
-                    while(var3.hasNext()) {
-                        fieldName = (String)var3.next();
-                        field = this.schemaPair.keySchema.field(fieldName);
-                        this.bindField(index++, field.schema(), ((Struct)record.key()).get(field), fieldName);
-                    }
-
-                    return index;
-                }
+                // 지원하지 않음
+//                if (this.schemaPair.keySchema.type().isPrimitive()) {
+//                    assert this.fieldsMetadata.keyFieldNames.size() == 1;
+//
+//                    this.bindField(index++, this.schemaPair.keySchema, record.key(), (String)this.fieldsMetadata.keyFieldNames.iterator().next());
+//                    break;
+//                } else {
+//                    var3 = this.fieldsMetadata.keyFieldNames.iterator();
+//
+//                    while(var3.hasNext()) {
+//                        fieldName = (String)var3.next();
+//                        field = this.schemaPair.keySchema.field(fieldName);
+//                        this.bindField(index++, field.schema(), ((Struct)record.key()).get(field), fieldName);
+//                    }
+//
+//                    return new MultiReturn(index, finalSql);
+//                }
+                break;
             case RECORD_VALUE:
                 var3 = this.fieldsMetadata.keyFieldNames.iterator();
 
                 while(var3.hasNext()) {
                     fieldName = (String)var3.next();
                     field = this.schemaPair.valueSchema.field(fieldName);
-                    this.bindField(index++, field.schema(), ((Struct)record.value()).get(field), fieldName);
+                    log.info("field :"+field);
+                    log.info("final sql : " + finalSql);
+
+                    finalSql = this.replaceValue((Struct) record.value(), field, finalSql);
                 }
 
-                return index;
+                return new MultiReturn(index, finalSql);
             default:
                 throw new ConnectException("Unknown primary key mode: " + this.pkMode);
         }
-
-        return index;
+        return new MultiReturn(index, finalSql);
     }
 
-    protected int bindNonKeyFields(SinkRecord record, Struct valueStruct, int index) throws SQLException {
+    protected MultiReturn bindNonKeyFields(SinkRecord record, Struct valueStruct, int index, String sql) throws SQLException {
         Iterator var4 = this.fieldsMetadata.nonKeyFieldNames.iterator();
+        String finalSql = sql;
+
         // 레코드의 필드 별로 다돌고 있어
         while(var4.hasNext()) {
             String fieldName = (String)var4.next();
-            log.info("fieldName : " + fieldName);
             Field field = record.valueSchema().field(fieldName);
-            String maybeDBOperation = null;
-            try {
-                // 근데 그 필드의 밸류가 오퍼레션일 수도 있고 그냥 데이터일수도 있는데
-                maybeDBOperation = valueStruct.get(field).toString();
-                // 만약에 오퍼레이션이면
-
-            } catch (Exception e) {
-                log.info("아닌애들은 여기로 ");
-                this.bindField(index++, field.schema(), valueStruct.get(field), fieldName);
-            }
-            if (maybeDBOperation.startsWith("DBOP")) {
-                // 여기서 Pstmt는 일단 기본적으로 새로만들어야해
-                this.statement.setObject(index, maybeDBOperation.substring(5),2002);
-                log.info("asdfasdf : "+this.statement.toString());
-            } else {
-                log.info("여긴 그냥 일반애들 ");
-                this.bindField(index++, field.schema(), valueStruct.get(field), fieldName);
-            }
-
+            finalSql = this.replaceValue(valueStruct, field, finalSql);
         }
 
-        return index;
+        return new MultiReturn(index, finalSql);
     }
 
-    /** @deprecated */
-    @Deprecated
-    protected void bindField(int index, Schema schema, Object value) throws SQLException {
-        this.dialect.bindField(this.statement, index, schema, value);
+    private String replaceValue(Struct valueStruct, Field field, String sql) {
+        String maybeDBOperation;
+        // 근데 그 필드의 밸류가 오퍼레이션일 수도 있고 그냥 데이터일수도 있는데
+        Object fieldValue = valueStruct.get(field);
+        maybeDBOperation = fieldValue.toString();
+        String finalSql = sql;
+        // 만약에 디비 오퍼레이션이면
+        if (maybeDBOperation.startsWith("DBOP")) {
+            // DBOP 를 제거하고 오퍼레이션만 replace 해준다.
+            finalSql = finalSql.replaceFirst("\\?", maybeDBOperation.substring(5));
+        } else {
+            // 디비 오퍼레이션이 아닌데 String이면 따옴표를 직접 붙여준다.
+            if (fieldValue instanceof String) {
+                finalSql = finalSql.replaceFirst("\\?", "\'" + maybeDBOperation + "\'");
+            } else {
+                finalSql = finalSql.replaceFirst("\\?", maybeDBOperation);
+            }
+        }
+
+        return finalSql;
     }
 
-    protected void bindField(int index, Schema schema, Object value, String fieldName) throws SQLException {
-        ColumnDefinition colDef = this.tabDef == null ? null : this.tabDef.definitionForColumn(fieldName);
-        this.dialect.bindField(this.statement, index, schema, value, colDef);
+    class MultiReturn {
+        private int returnIndex;
+        private String returnSql;
+
+        public MultiReturn(int returnIndex, String returnSql) {
+            this.returnIndex = returnIndex;
+            this.returnSql = returnSql;
+        }
+
+        public int getReturnIndex() {
+            return returnIndex;
+        }
+
+        public String getReturnSql() {
+            return returnSql;
+        }
     }
+
+    // PKMODE 다른 모드 지원하려할 때 원래 방식 이해하기위해 잠시 남겨놓는다.
+//    protected void bindField(int index, Schema schema, Object value, String fieldName) throws SQLException {
+//        ColumnDefinition colDef = this.tabDef == null ? null : this.tabDef.definitionForColumn(fieldName);
+//        this.dialect.bindField(this.statement, index, schema, value, colDef);
+//    }
+
 }
