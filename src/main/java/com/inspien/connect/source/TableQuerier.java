@@ -41,9 +41,11 @@ abstract class TableQuerier implements Comparable<TableQuerier> {
     private final Logger log = LoggerFactory.getLogger(TableQuerier.class);
 
     protected final DatabaseDialect dialect;
-    protected final String topicPrefix;
+    protected final String topicName;
     protected final TableId tableId;
     protected final String suffix;
+
+    protected final String fk;
 
     // Mutable state
     protected long lastUpdate;
@@ -54,7 +56,7 @@ abstract class TableQuerier implements Comparable<TableQuerier> {
     private String loggedQueryString;
 
     // 헤더테이블의 이름
-    protected final String dataHeader;
+    protected String dataHeader;
     // 헤더테이블을 SELECT 할 쿼리
     protected final String dataHeaderQuery;
     // 헤더테이블을 SELECT 하기전에 업데이트할 쿼리
@@ -70,23 +72,23 @@ abstract class TableQuerier implements Comparable<TableQuerier> {
     public TableQuerier(
             DatabaseDialect dialect,
             String tableName,
-            String topicPrefix,
+            String topicName,
             String suffix,
-            String dataHeader,
             String dataHeaderQuery,
             String dataHeaderUpdateQuery,
-            String dataHeaderCompleteQuery
+            String dataHeaderCompleteQuery,
+            String fk
     ) {
         this.dialect = dialect;
         this.tableId = dialect.parseTableIdentifier(tableName);
-        this.topicPrefix = topicPrefix;
+        this.topicName = topicName;
         this.lastUpdate = 0;
         this.suffix = suffix;
-        this.dataHeader = dataHeader;
         this.dataHeaderQuery = dataHeaderQuery;
         this.dataHeaderUpdateQuery = dataHeaderUpdateQuery;
         this.dataHeaderCompleteQuery = dataHeaderCompleteQuery;
         this.headerStruct = null;
+        this.fk = fk;
     }
 
     public long getLastUpdate() {
@@ -110,10 +112,10 @@ abstract class TableQuerier implements Comparable<TableQuerier> {
         return resultSet != null;
     }
 
-    public void maybeStartQuery(Connection db) throws SQLException {
+    public void maybeStartQuery(Connection db, String dataHeader) throws SQLException {
         if (resultSet == null) {
-            log.info("여기도 벌크일땐 오나요?");
             this.db = db;
+            this.dataHeader = dataHeader;
             stmt = getOrCreatePreparedStatement(db);
             resultSet = executeQuery();
             String schemaName = tableId != null ? tableId.tableName() : null; // backwards compatible
@@ -121,7 +123,29 @@ abstract class TableQuerier implements Comparable<TableQuerier> {
         }
     }
 
-    public abstract SourceRecord extractRecordInMultiMode(int batchMaxRows, Schema schema) throws SQLException;
+    public Schema getSchema() {
+        return schemaMapping.schema();
+    }
+
+    public abstract StructsWithSchema extractStructsWithSchema(int batchMaxRows) throws SQLException;
+
+    public static class StructsWithSchema {
+        private Schema schema;
+        private List<Struct> structs;
+
+        public StructsWithSchema(Schema schema, List<Struct> structs) {
+            this.schema = schema;
+            this.structs = structs;
+        }
+
+        public Schema getSchema() {
+            return schema;
+        }
+
+        public List<Struct> getStruct() {
+            return structs;
+        }
+    }
 
     protected abstract ResultSet executeQuery() throws SQLException;
 
